@@ -11,7 +11,7 @@
 - Склонируйте репозиторий:
 
   ```shell
-  git clone https://github.com/sergiokapone/goit_python_web_hw9_bs4_.git
+  git clone https://github.com/sergiokapone/goit_python_web_hw9_Scrapy.git
   ```
 
 - Для встановлення залежностей використайте команду `pipenv install` або `pipenv sync`.
