@@ -1,3 +1,5 @@
+![Scrapy](https://scrapy.org/img/scrapylogo.png)
+
 # Домашнє завдання #9 (Додаткове завдання)
 
 Виконується скрапінг[^1] сайту http://quotes.toscrape.com за допомогою фреймворку [`Scrapy`](https://scrapy.org/). Дані скрапінгу зберігаються в базі даних `MongoDB` та в відповідних `json`-файлах
