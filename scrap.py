@@ -1,87 +1,154 @@
-import os
-import scrapy
 import json
+import scrapy
+from itemadapter import ItemAdapter
 from scrapy.crawler import CrawlerProcess
+from scrapy.item import Item, Field
+from database.models import Authors, Quotes
+from database.connect import get_database
+from mongoengine.errors import DoesNotExist
 
 
-class QuotesSpider(scrapy.Spider):
-    name = "quotes"
+import logging
+from scrapy.utils.log import configure_logging 
+
+configure_logging(install_root_handler=False)
+logging.disable(logging.DEBUG)
+
+
+# Контейнери даних
+
+class QuoteItem(Item):
+    tags = Field()
+    author = Field()
+    quote = Field()
+
+
+class AuthorItem(Item):
+    fullname = Field()
+    born_date = Field()
+    born_location = Field()
+    description = Field()
+
+# Павук
+
+class MainSpider(scrapy.Spider):
+    name = "main_spider"
     allowed_domains = ["quotes.toscrape.com"]
-    start_urls = ["http://quotes.toscrape.com/"]
+    start_urls = ["http://quotes.toscrape.com"]
     custom_settings = {
-        "FEED_FORMAT": "json",
-        "FEED_URI": "quotes.json",
-        "FEED_EXPORT_INDENT": 2,
+        'ITEM_PIPELINES': {'__main__.MainPipeline': 100},
+        'MONGODB_COLLECTION': 'quotes',
+        'MONGODB_UNIQUE_KEY': 'quote',
+        'MONGODB_ADD_TIMESTAMP': True
     }
 
-    all_quotes = []
 
-    def parse(self, response):
-        for quote in response.xpath("/html//div[@class='quote']"):
-            quote_data = {
-                "author": quote.xpath("span/small/text()").get(),
-                "tags": quote.xpath("div[@class='tags']/a/text()").extract(),
-                "quote": quote.xpath("span[@class='text']/text()").get(),
-            }
-            self.all_quotes.append(quote_data)
+    def parse(self, response, *args):
 
-        next_link = response.xpath("//li[@class='next']/a/@href").get()
-        if next_link:
-            yield scrapy.Request(
-                url=self.start_urls[0] + next_link, callback=self.parse
+        # Queries
+
+        QUERY_QUOTE = "/html//div[@class='quote']"
+        QUERY_TAG = "div[@class='tags']/a[@class='tag']/text()"
+        QUERY_AUTHOR = "span/small[@class='author']/text()"
+        QUERY_TEXT = "span[@class='text']/text()"
+        AUTHOR_LINK = "span/a/@href"
+        BUTTON_NEXT = "//li[@class='next']/a/@href"
+
+        for el in response.xpath(QUERY_QUOTE):
+            tags = [e.strip() for e in el.xpath(QUERY_TAG).extract()]
+            author = el.xpath(QUERY_AUTHOR).get().strip()\
+                .replace('-', " ") # 6'th page problem
+            quote = el.xpath(QUERY_TEXT).get()\
+                .strip().replace('“', "").replace('”', "")
+
+            yield  QuoteItem(tags=tags,
+                             author=author,
+                             quote=quote)
+
+            yield response.follow(
+                url=self.start_urls[0] + el.xpath(AUTHOR_LINK).get().strip(),
+                callback=self.parse_author
             )
 
-    def closed(self, reason):
+        next_link = response.xpath(BUTTON_NEXT).get()
+        if next_link:
+            yield scrapy.Request(url=self.start_urls[0] + next_link.strip())
 
-        data = self.all_quotes
-        with open("quotes.json", "w") as file:
-            json.dump(data, file, indent=2)
+    def parse_author(self, response, *args):
 
+        # Queries
 
-class AuthorsSpider(scrapy.Spider):
-    name = "authors"
-    allowed_domains = ["quotes.toscrape.com"]
-    start_urls = ["http://quotes.toscrape.com/"]
-    custom_settings = {
-        "FEED_FORMAT": "json",
-        "FEED_URI": "authors.json",
-        "FEED_EXPORT_INDENT": 2,
-    }
+        AUTHOR_DETAILS = "/html//div[@class='author-details']"
+        FULLNAME = "h3[@class='author-title']/text()"
+        BORN_DATE = "p/span[@class='author-born-date']/text()"
+        BORN_LOCATION = "p/span[@class='author-born-location']/text()"
+        DESCRIPTION = "div[@class='author-description']/text()"
 
-    def parse(self, response):
-        # Витягування посилань на сторінки авторів із поточної сторінки
-        author_links = response.css(".author + a::attr(href)").getall()
-        yield from response.follow_all(author_links, self.parse_author)
+        content = response.xpath(AUTHOR_DETAILS)
+        fullname = content.xpath(FULLNAME).get().strip().strip()\
+            .replace('-', " ") # 6'th page problem
+        born_date = content.xpath(BORN_DATE).get().strip()
+        born_location = content.xpath(BORN_LOCATION).get().strip()
+        description = content.xpath(DESCRIPTION).get().strip()
 
-        next_page = response.css("li.next a::attr(href)").get()
-        if next_page:
-            yield response.follow(next_page, self.parse)
-
-    def parse_author(self, response):
-        fullname = response.css(".author-title::text").get().strip().replace("-", " ")
-        born_date = response.css(".author-born-date::text").get().strip()
-        born_location = response.css(".author-born-location::text").get().strip()
-        description = (
-            response.css(".author-description::text").get().strip().replace('"', "")
-        )
-
-        author_data = {
-            "fullname": fullname,
-            "born_date": born_date,
-            "born_location": born_location,
-            "description": description,
-        }
-
-        yield author_data
+        yield AuthorItem(fullname=fullname,
+                         born_date=born_date,
+                         born_location=born_location,
+                         description=description)
 
 
-if __name__ == "__main__":
+class MainPipeline:
+    authors = []
+    quotes = []
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        data = adapter.asdict() 
+        if isinstance(item, AuthorItem):
+            try:
+                author = Authors.objects.get(fullname=adapter['fullname'])
+                self.authors.append(data)
+            except DoesNotExist:
+                author = Authors(**data)
+                author.save()
+        elif isinstance(item, QuoteItem):
+            try:
+                author = Authors.objects.get(fullname=adapter['author'])
+            except DoesNotExist:
+                author = Authors(fullname=adapter['author'])
+                author.save()
+            quote = Quotes(
+                author=author,
+                tags=adapter['tags'],
+                quote=adapter['quote']
+            )
+            quote.save()
+            self.quotes.append(adapter.asdict())
+        return item
+    
+    def close_spider(self, spider):
 
-    if os.path.exists("authors.json"):
-        os.remove("authors.json")
+        with open('quotes.json', 'w', encoding='utf-8') as file_quotes:
+            json.dump(self.quotes, 
+                      file_quotes, 
+                      ensure_ascii=False, 
+                      indent=2)
 
-    # Запуск павуків
+        with open('authors.json', 'w', encoding='utf-8') as file_authors:
+            json.dump(self.authors, 
+                      file_authors, 
+                      ensure_ascii=False, 
+                      indent=2)
+
+
+
+if __name__ == '__main__':
+    get_database()
+
+    # Cclean base
+    Authors.objects.all().delete()
+    Quotes.objects.all().delete()
+
     process = CrawlerProcess()
-    process.crawl(QuotesSpider)
-    process.crawl(AuthorsSpider)
+    process.crawl(MainSpider)
     process.start()
+    logging.info('End')
