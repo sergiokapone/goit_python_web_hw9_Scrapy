@@ -1,4 +1,4 @@
-![Scrapy](https://scrapy.org/img/scrapylogo.png)
+<p align="center"> <img src="https://scrapy.org/img/scrapylogo.png" alt="Scrapy" /> </p>
 
 # Домашнє завдання #9 (Додаткове завдання)
 
